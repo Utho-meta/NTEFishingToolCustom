@@ -1,6 +1,7 @@
 namespace NTEFishingToolCustom.Imaging;
 
 using System.Drawing;
+using System.Drawing.Imaging;
 using NTEFishingToolCustom.Native;
 
 public static class WindowCapture
@@ -19,7 +20,7 @@ public static class WindowCapture
             return null;
         }
 
-        var bitmap = new Bitmap(width, height);
+        var bitmap = new Bitmap(width, height, PixelFormat.Format32bppArgb);
         using var graphics = Graphics.FromImage(bitmap);
         graphics.CopyFromScreen(rect.Left, rect.Top, 0, 0, new Size(width, height));
         return bitmap;

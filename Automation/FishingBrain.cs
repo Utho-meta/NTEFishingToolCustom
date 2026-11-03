@@ -16,9 +16,12 @@ public sealed class FishingBrain
     private DateTime? _fishCaughtSeenSince;
     private DateTime _nextBiteProbeAt = DateTime.MinValue;
     private int _biteProbeCount;
+    private int _baitEmptyTipHits;
     private DateTime _recoveringFromResultUntil = DateTime.MinValue;
 
     public FishingState State => _state;
+    public bool PreferFightFastPath => _state == FishingState.Fighting
+        && (_fightBarLostSince is null || DateTime.Now - _fightBarLostSince.Value < FightExitGrace);
 
     public void Reset()
     {
@@ -34,6 +37,7 @@ public sealed class FishingBrain
         _fishCaughtSeenSince = null;
         _nextBiteProbeAt = DateTime.MinValue;
         _biteProbeCount = 0;
+        _baitEmptyTipHits = 0;
         _recoveringFromResultUntil = DateTime.MinValue;
     }
 
@@ -49,6 +53,7 @@ public sealed class FishingBrain
         {
             _waitingForBite = false;
             _biteProbeCount = 0;
+            _baitEmptyTipHits = 0;
             _state = FishingState.Fighting;
             _wasFighting = true;
             _fightBarLostSince = null;
@@ -81,6 +86,7 @@ public sealed class FishingBrain
         {
             _waitingForBite = false;
             _biteProbeCount = 0;
+            _baitEmptyTipHits = 0;
             _resultCloseTipSeenSince ??= DateTime.Now;
             _fishCaughtSeenSince = null;
             actions.ResetFishingControl();
@@ -98,6 +104,7 @@ public sealed class FishingBrain
         {
             _waitingForBite = false;
             _biteProbeCount = 0;
+            _baitEmptyTipHits = 0;
             _fishCaughtSeenSince ??= DateTime.Now;
             actions.ResetFishingControl();
             if ((DateTime.Now - _fishCaughtSeenSince.Value).TotalSeconds >= 10)
@@ -114,13 +121,14 @@ public sealed class FishingBrain
         {
             _waitingForBite = false;
             _biteProbeCount = 0;
+            _baitEmptyTipHits = 0;
             actions.CastOrHook();
             _state = FishingState.Fighting;
             MarkAction(TimeSpan.FromMilliseconds(350));
             return;
         }
 
-        if (facts.BaitEmptyTipVisible)
+        if (CanHandleBaitEmptyTip(facts))
         {
             HandleBaitNeeded(actions, settings);
             return;
@@ -131,11 +139,16 @@ public sealed class FishingBrain
             actions.ResetFishingControl();
             if (DateTime.Now >= _nextBiteProbeAt)
             {
+                actions.ClickBlankRecovery();
                 actions.CastOrHook();
                 _biteProbeCount++;
                 if (_biteProbeCount >= 15)
                 {
-                    HandleBaitNeeded(actions, settings);
+                    actions.Note("No bite after 15 probes; bait-empty tip not visible, keep fishing without opening shop");
+                    _waitingForBite = false;
+                    _biteProbeCount = 0;
+                    _state = FishingState.FishingIdle;
+                    MarkAction(TimeSpan.FromSeconds(1));
                     return;
                 }
 
@@ -181,6 +194,7 @@ public sealed class FishingBrain
         {
             _waitingForBite = false;
             _biteProbeCount = 0;
+            _baitEmptyTipHits = 0;
             _state = FishingState.Recovering;
             actions.Back();
             MarkAction(TimeSpan.FromSeconds(2));
@@ -201,6 +215,7 @@ public sealed class FishingBrain
         {
             _waitingForBite = false;
             _biteProbeCount = 0;
+            _baitEmptyTipHits = 0;
             _state = FishingState.FishingIdle;
             actions.ClickStartFishing(facts.StartFishingButtonCenter);
             _waitingToPressF = true;
@@ -215,6 +230,7 @@ public sealed class FishingBrain
         {
             _waitingForBite = false;
             _biteProbeCount = 0;
+            _baitEmptyTipHits = 0;
             _state = FishingState.Recovering;
             actions.Back();
             MarkAction(TimeSpan.FromSeconds(2));
@@ -244,6 +260,7 @@ public sealed class FishingBrain
         _fishCaughtSeenSince = null;
         _waitingToPressF = false;
         _biteProbeCount = 0;
+        _baitEmptyTipHits = 0;
         _state = FishingState.Recovering;
         actions.CloseCaughtResultAndCast();
         StartBiteProbe();
@@ -254,15 +271,31 @@ public sealed class FishingBrain
 
     private void StartBiteProbe()
     {
+        _wasFighting = false;
+        _fightBarLostSince = null;
         _waitingForBite = true;
         _nextBiteProbeAt = DateTime.Now + TimeSpan.FromSeconds(1);
         _biteProbeCount = 0;
+        _baitEmptyTipHits = 0;
+    }
+
+    private bool CanHandleBaitEmptyTip(FrameFacts facts)
+    {
+        if (!facts.BaitEmptyTipVisible || _wasFighting)
+        {
+            _baitEmptyTipHits = 0;
+            return false;
+        }
+
+        _baitEmptyTipHits++;
+        return _baitEmptyTipHits >= 2;
     }
 
     private void HandleBaitNeeded(GameActions actions, AutomationSettings settings)
     {
         _waitingForBite = false;
         _biteProbeCount = 0;
+        _baitEmptyTipHits = 0;
         _state = FishingState.NeedBait;
         if (settings.AutoBuyBait)
         {

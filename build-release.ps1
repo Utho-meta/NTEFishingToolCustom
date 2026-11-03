@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "v1.0.0"
+    [string]$Version = "v1.0.10"
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,6 +31,18 @@ if (Test-Path $ZipPath) {
 
 if ($LASTEXITCODE -ne 0) {
     throw "dotnet publish failed with exit code $LASTEXITCODE"
+}
+
+$RuntimeLogs = @(
+    "NTEFishingToolCustom.log",
+    "LoopException.log"
+)
+
+foreach ($LogName in $RuntimeLogs) {
+    $LogPath = Join-Path $PublishDir $LogName
+    if (Test-Path $LogPath) {
+        Remove-Item -LiteralPath $LogPath -Force
+    }
 }
 
 Compress-Archive -Path (Join-Path $PublishDir "*") -DestinationPath $ZipPath -Force

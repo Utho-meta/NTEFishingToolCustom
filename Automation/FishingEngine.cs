@@ -10,6 +10,7 @@ public sealed class FishingEngine
     private readonly FishingBrain _brain = new();
     private CancellationTokenSource? _cts;
     private Task? _loopTask;
+    private bool _isStopping;
 
     public event Action? Stopped;
 
@@ -27,13 +28,20 @@ public sealed class FishingEngine
 
         _brain.Reset();
         _cts = new CancellationTokenSource();
+        _isStopping = false;
         _loopTask = Task.Run(() => RunLoop(settings, _cts.Token));
         _log("Automation started");
     }
 
     public void Stop()
     {
-        _cts?.Cancel();
+        if (_cts is null || _isStopping)
+        {
+            return;
+        }
+
+        _isStopping = true;
+        _cts.Cancel();
         _cts = null;
         _log("Automation stop requested");
     }
@@ -71,7 +79,7 @@ public sealed class FishingEngine
                     continue;
                 }
 
-                var facts = FrameAnalyzer.Analyze(frame, window, templates);
+                var facts = FrameAnalyzer.Analyze(frame, window, templates, _brain.PreferFightFastPath);
                 _brain.Tick(facts, actions, settings);
 
                 await Task.Delay(settings.LoopDelayMs, token);
@@ -97,6 +105,7 @@ public sealed class FishingEngine
         finally
         {
             actions.ReleaseHeldDirection();
+            _isStopping = false;
             Stopped?.Invoke();
         }
     }

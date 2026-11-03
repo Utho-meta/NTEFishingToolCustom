@@ -1,6 +1,7 @@
 namespace NTEFishingToolCustom.Automation;
 
 using System.Drawing;
+using NTEFishingToolCustom.Imaging;
 using NTEFishingToolCustom.Native;
 
 public sealed class GameActions
@@ -8,21 +9,37 @@ public sealed class GameActions
     private readonly IntPtr _window;
     private readonly Action<string> _log;
     private readonly Func<bool> _shouldStop;
+    private readonly TemplateLibrary _templates;
     private byte _heldKey;
 
-    private static readonly PointF FiveCoinUniversalBait = new(0.296f, 0.197f);
     private static readonly PointF MaxQuantity = new(0.952f, 0.845f);
     private static readonly PointF PurchaseButton = new(0.839f, 0.909f);
     private static readonly PointF PurchaseConfirmButton = new(0.601f, 0.645f);
     private static readonly PointF ChangeBaitButton = new(0.610f, 0.640f);
     private static readonly PointF StartFishingButton = new(0.840f, 0.835f);
-    private static readonly PointF ResultBlankArea = new(0.250f, 0.250f);
+    private static readonly PointF ResultCloseBlankArea = StartFishingButton;
+    private static readonly PointF NeutralBlankArea = StartFishingButton;
+    private const int ShopOpenDelayMs = 2000;
+    private static readonly RectangleF[] ShopBaitSlots =
+    {
+        new(0.025f, 0.110f, 0.102f, 0.190f),
+        new(0.138f, 0.110f, 0.102f, 0.190f),
+        new(0.252f, 0.110f, 0.102f, 0.190f),
+        new(0.025f, 0.312f, 0.102f, 0.190f),
+        new(0.138f, 0.312f, 0.102f, 0.190f),
+        new(0.252f, 0.312f, 0.102f, 0.190f),
+    };
+    private static readonly double[] ShopCompactBaitScales = { 2.2, 2.4, 2.6, 2.8, 3.0, 3.2, 3.4 };
+    private static readonly double[] ShopPriceScales = { 0.82, 0.90, 0.98, 1.06, 1.14, 1.22 };
+    private const double MinFiveCoinBaitScore = 0.70;
+    private const double MinFiveCoinPriceScore = 0.62;
 
     public GameActions(IntPtr window, Action<string> log, Func<bool>? shouldStop = null)
     {
         _window = window;
         _log = log;
         _shouldStop = shouldStop ?? (() => false);
+        _templates = new TemplateLibrary(AppContext.BaseDirectory, log);
     }
 
     public void KeepPointerNearFishBarCenter(Rectangle fishBarBounds, int pointerX, int tolerance)
@@ -84,7 +101,13 @@ public sealed class GameActions
     public void CloseCaughtResult()
     {
         ReleaseHeldDirection();
-        ClickClientRatio(ResultBlankArea, "close fish result blank area", holdMs: 120);
+        ClickClientRatio(ResultCloseBlankArea, "close fish result blank area", holdMs: 120);
+    }
+
+    public void ClickBlankRecovery()
+    {
+        ReleaseHeldDirection();
+        ClickClientRatio(NeutralBlankArea, "blank recovery", holdMs: 80);
     }
 
     public void CloseCaughtResultAndCast()
@@ -145,12 +168,20 @@ public sealed class GameActions
 
         _log("Bait empty: buy five-coin universal bait");
         OpenShop();
-        if (!Wait(2500))
+        _log("Wait 2s for shop to load");
+        if (!Wait(ShopOpenDelayMs))
         {
             return;
         }
 
-        ClickClientRatio(FiveCoinUniversalBait, "select five-coin universal bait");
+        if (!ClickFiveCoinUniversalBait())
+        {
+            _log("Five-coin universal bait was not found; abort purchase");
+            Back();
+            Wait(800);
+            return;
+        }
+
         if (!Wait(700))
         {
             return;
@@ -212,6 +243,11 @@ public sealed class GameActions
         ReleaseHeldDirection();
     }
 
+    public void Note(string message)
+    {
+        _log(message);
+    }
+
     private void HoldDirection(byte scanCode)
     {
         if (_heldKey == scanCode)
@@ -261,6 +297,78 @@ public sealed class GameActions
 
         var point = new Point(rect.Left + clientPoint.X, rect.Top + clientPoint.Y);
         ClickScreenPoint(point, label, holdMs, repeat);
+    }
+
+    private bool ClickFiveCoinUniversalBait()
+    {
+        if (_shouldStop())
+        {
+            return false;
+        }
+
+        using var frame = WindowCapture.Capture(_window);
+        if (frame is not null)
+        {
+            Point? bestSlotCenter = null;
+            var bestScore = double.MinValue;
+
+            for (var i = 0; i < ShopBaitSlots.Length; i++)
+            {
+                var slot = ToFrameRect(frame, ShopBaitSlots[i]);
+                var priceRect = new Rectangle(
+                    slot.Left + (int)(slot.Width * 0.08),
+                    slot.Top + (int)(slot.Height * 0.72),
+                    Math.Max(1, (int)(slot.Width * 0.84)),
+                    Math.Max(1, (int)(slot.Height * 0.24)));
+
+                var baitMatch = _templates.FindBestScaled(
+                    "FiveCoinUniversalBaitInner",
+                    frame,
+                    slot,
+                    scales: ShopCompactBaitScales);
+
+                var priceMatch = _templates.FindBestScaled(
+                    "FiveCoinPrice",
+                    frame,
+                    priceRect,
+                    scales: ShopPriceScales);
+
+                var baitScore = baitMatch?.Similarity ?? 0;
+                var priceScore = priceMatch?.Similarity ?? 0;
+                _log($"Shop slot {i + 1}: bait {baitScore:0.00}, price {priceScore:0.00}");
+
+                if (baitScore < MinFiveCoinBaitScore || priceScore < MinFiveCoinPriceScore)
+                {
+                    continue;
+                }
+
+                var center = new Point(slot.Left + slot.Width / 2, slot.Top + slot.Height / 2);
+                var score = baitScore + priceScore;
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestSlotCenter = center;
+                }
+            }
+
+            if (bestSlotCenter is not null)
+            {
+                ClickClientPoint(bestSlotCenter.Value, $"select five-coin universal bait score {bestScore:0.00}");
+                return true;
+            }
+        }
+
+        _log("Five-coin universal bait not found in first two shop rows");
+        return false;
+    }
+
+    private static Rectangle ToFrameRect(Bitmap frame, RectangleF ratio)
+    {
+        return new Rectangle(
+            Math.Max(0, (int)(frame.Width * ratio.X)),
+            Math.Max(0, (int)(frame.Height * ratio.Y)),
+            Math.Max(1, (int)(frame.Width * ratio.Width)),
+            Math.Max(1, (int)(frame.Height * ratio.Height)));
     }
 
     private void ClickScreenPoint(Point point, string label, int holdMs, int repeat)
